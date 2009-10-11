@@ -62,6 +62,12 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             <scope>test</scope>
         </dependency>
         <dependency>
+            <groupId>org.eclipse</groupId>
+            <artifactId>jgit-io</artifactId>
+            <version>${project.version}</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
             <groupId>com.jcraft</groupId>
             <artifactId>jsch</artifactId>
             <version>0.1.41</version>
