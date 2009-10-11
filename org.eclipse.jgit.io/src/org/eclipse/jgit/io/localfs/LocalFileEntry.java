@@ -43,6 +43,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.InvocationTargetException;
 import java.net.URI;
 import org.eclipse.jgit.io.Entry;
 import org.eclipse.jgit.io.StorageSystem;
@@ -60,7 +61,7 @@ public class LocalFileEntry
         implements Entry {
 
   private File localFile;
-  private StorageSystem storageSystem;
+  private LocalFileSystem storageSystem;
 
   /**
    * Contructs an entry based of on the local file system storage and a file
@@ -70,7 +71,7 @@ public class LocalFileEntry
    * @throws IllegalArgumentException If either argument is NULL
    */
   protected LocalFileEntry(File localFile,
-                           StorageSystem storageSystem)
+                           LocalFileSystem storageSystem)
           throws IllegalArgumentException {
     setLocalFile(localFile);
     setStorageSystem(storageSystem);
@@ -81,7 +82,7 @@ public class LocalFileEntry
    * @param storageSystem Storage system
    * @throws IllegalArgumentException IF storageSystem is null
    */
-  protected void setStorageSystem(StorageSystem storageSystem)
+  protected void setStorageSystem(LocalFileSystem storageSystem)
           throws IllegalArgumentException {
     if (storageSystem == null) {
       throw new IllegalArgumentException("Storage system can't be NULL!");
@@ -215,5 +216,50 @@ public class LocalFileEntry
 
   public long length() {
     return getLocalFile().length();
+  }
+
+  public boolean isExecutableSupported() {
+    return LocalFileSystem.platform.isExecutableSupproted();
+  }
+
+  public boolean isExecutable() {
+    if (LocalFileSystem.platform.isExecutableSupproted()) {
+      try {
+        final Object r = LocalFileSystem.canExecute.invoke(
+                getLocalFile(),
+                (Object[]) null);
+        return ((Boolean) r).booleanValue();
+      }
+      catch (IllegalArgumentException e) {
+        throw new Error(e);
+      }
+      catch (IllegalAccessException e) {
+        throw new Error(e);
+      }
+      catch (InvocationTargetException e) {
+        throw new Error(e);
+      }
+    }
+    else {
+      return false;
+    }
+  }
+
+  public boolean setExecutable(boolean executable) {
+    try {
+      final Object r;
+      r = LocalFileSystem.setExecute.invoke(getLocalFile(), new Object[] {
+                Boolean.valueOf(executable)});
+      return ((Boolean) r).booleanValue();
+    }
+    catch (IllegalArgumentException e) {
+      throw new Error(e);
+    }
+    catch (IllegalAccessException e) {
+      throw new Error(e);
+    }
+    catch (InvocationTargetException e) {
+      throw new Error(e);
+    }
   }
 }
