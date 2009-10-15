@@ -352,6 +352,10 @@ public class LocalFileEntry
     }
   }
 
+  public long getLastModifiedDate() {
+    return getLocalFile().lastModified();
+  }
+
   @Override
   protected void performLock()
           throws Exception {

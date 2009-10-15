@@ -203,6 +203,12 @@ public interface Entry
           throws IOException;
 
   /**
+   * Retrieve the last date the entry was modified.
+   * @return Long representing the last modification date.
+   */
+  public long getLastModifiedDate();
+
+  /**
    * Retrieve the entry for lock file
    * @return Null if lock is attained else null
    */
