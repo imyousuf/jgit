@@ -38,13 +38,13 @@
 
 package org.eclipse.jgit.lib;
 
-import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.zip.DataFormatException;
 import java.util.zip.Inflater;
 
 import org.eclipse.jgit.errors.CorruptObjectException;
+import org.eclipse.jgit.io.Entry;
 import org.eclipse.jgit.util.MutableInteger;
 import org.eclipse.jgit.util.NB;
 import org.eclipse.jgit.util.RawParseUtils;
@@ -71,7 +71,7 @@ public class UnpackedObjectLoader extends ObjectLoader {
 	 * @throws IOException
 	 *             the loose object file exists, but is corrupt.
 	 */
-	public UnpackedObjectLoader(final File path, final AnyObjectId id)
+	public UnpackedObjectLoader(final Entry path, final AnyObjectId id)
 			throws IOException {
 		this(NB.readFully(path), id);
 	}

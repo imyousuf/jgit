@@ -38,13 +38,13 @@
 
 package org.eclipse.jgit.lib;
 
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.Iterator;
 
 import org.eclipse.jgit.errors.MissingObjectException;
+import org.eclipse.jgit.io.Entry;
 import org.eclipse.jgit.util.NB;
 
 /**
@@ -74,8 +74,8 @@ public abstract class PackIndex implements Iterable<PackIndex.MutableEntry> {
 	 *             the file exists but could not be read due to security errors,
 	 *             unrecognized data version, or unexpected data corruption.
 	 */
-	public static PackIndex open(final File idxFile) throws IOException {
-		final FileInputStream fd = new FileInputStream(idxFile);
+	public static PackIndex open(final Entry idxFile) throws IOException {
+		final InputStream fd = idxFile.getInputStream();
 		try {
 			final byte[] hdr = new byte[8];
 			NB.readFully(fd, hdr, 0, hdr.length);

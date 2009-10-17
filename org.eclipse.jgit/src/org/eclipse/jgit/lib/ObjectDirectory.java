@@ -38,10 +38,8 @@
 package org.eclipse.jgit.lib;
 
 import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -54,8 +52,9 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.eclipse.jgit.errors.PackMismatchException;
+import org.eclipse.jgit.io.Entry;
+import org.eclipse.jgit.io.StorageSystem;
 import org.eclipse.jgit.lib.RepositoryCache.FileKey;
-import org.eclipse.jgit.util.FS;
 
 /**
  * Traditional file system based {@link ObjectDatabase}.
@@ -68,13 +67,15 @@ import org.eclipse.jgit.util.FS;
 public class ObjectDirectory extends ObjectDatabase {
 	private static final PackList NO_PACKS = new PackList(-1, -1, new PackFile[0]);
 
-	private final File objects;
+	private final Entry objects;
 
-	private final File infoDirectory;
+	private final Entry infoDirectory;
 
-	private final File packDirectory;
+	private final Entry packDirectory;
 
-	private final File alternatesFile;
+	private final Entry alternatesFile;
+
+  private final StorageSystem storageSystem;
 
 	private final AtomicReference<PackList> packList;
 
@@ -84,31 +85,32 @@ public class ObjectDirectory extends ObjectDatabase {
 	 * @param dir
 	 *            the location of the <code>objects</code> directory.
 	 */
-	public ObjectDirectory(final File dir) {
+	public ObjectDirectory(final Entry dir) {
 		objects = dir;
-		infoDirectory = new File(objects, "info");
-		packDirectory = new File(objects, "pack");
-		alternatesFile = new File(infoDirectory, "alternates");
+    storageSystem = objects.getStorageSystem();
+		infoDirectory = storageSystem.resolve(objects, "info");
+		packDirectory = storageSystem.resolve(objects, "pack");
+		alternatesFile = storageSystem.resolve(infoDirectory, "alternates");
 		packList = new AtomicReference<PackList>(NO_PACKS);
 	}
 
 	/**
 	 * @return the location of the <code>objects</code> directory.
 	 */
-	public final File getDirectory() {
+	public final Entry getDirectory() {
 		return objects;
 	}
 
 	@Override
 	public boolean exists() {
-		return objects.exists();
+		return objects.isExists();
 	}
 
 	@Override
 	public void create() throws IOException {
 		objects.mkdirs();
-		infoDirectory.mkdir();
-		packDirectory.mkdir();
+		infoDirectory.mkdirs();
+		packDirectory.mkdirs();
 	}
 
 	@Override
@@ -126,14 +128,14 @@ public class ObjectDirectory extends ObjectDatabase {
 	 *            identity of the loose object to map to the directory.
 	 * @return location of the object, if it were to exist as a loose object.
 	 */
-	public File fileFor(final AnyObjectId objectId) {
+	public Entry fileFor(final AnyObjectId objectId) {
 		return fileFor(objectId.name());
 	}
 
-	private File fileFor(final String objectName) {
+	private Entry fileFor(final String objectName) {
 		final String d = objectName.substring(0, 2);
 		final String f = objectName.substring(2);
-		return new File(new File(objects, d), f);
+		return storageSystem.resolve(storageSystem.resolve(objects, d), f);
 	}
 
 	/**
@@ -147,7 +149,7 @@ public class ObjectDirectory extends ObjectDatabase {
 	 *             index file could not be opened, read, or is not recognized as
 	 *             a Git pack file index.
 	 */
-	public void openPack(final File pack, final File idx) throws IOException {
+	public void openPack(final Entry pack, final Entry idx) throws IOException {
 		final String p = pack.getName();
 		final String i = idx.getName();
 
@@ -243,7 +245,7 @@ public class ObjectDirectory extends ObjectDatabase {
 
 	@Override
 	protected boolean hasObject2(final String objectName) {
-		return fileFor(objectName).exists();
+		return fileFor(objectName).isExists();
 	}
 
 	@Override
@@ -252,7 +254,7 @@ public class ObjectDirectory extends ObjectDatabase {
 			throws IOException {
 		try {
 			return new UnpackedObjectLoader(fileFor(objectName), objectId);
-		} catch (FileNotFoundException noFile) {
+		} catch (IOException noFile) {
 			return null;
 		}
 	}
@@ -260,7 +262,7 @@ public class ObjectDirectory extends ObjectDatabase {
 	@Override
 	protected boolean tryAgain1() {
 		final PackList old = packList.get();
-		if (old.tryAgain(packDirectory.lastModified()))
+		if (old.tryAgain(packDirectory.getLastModifiedDate()))
 			return old != scanPacks(old);
 		return false;
 	}
@@ -325,7 +327,7 @@ public class ObjectDirectory extends ObjectDatabase {
 	private PackList scanPacksImpl(final PackList old) {
 		final Map<String, PackFile> forReuse = reuseMap(old);
 		final long lastRead = System.currentTimeMillis();
-		final long lastModified = packDirectory.lastModified();
+		final long lastModified = packDirectory.getLastModifiedDate();
 		final Set<String> names = listPackDirectory();
 		final List<PackFile> list = new ArrayList<PackFile>(names.size() >> 2);
 		boolean foundNew = false;
@@ -351,8 +353,8 @@ public class ObjectDirectory extends ObjectDatabase {
 				continue;
 			}
 
-			final File packFile = new File(packDirectory, packName);
-			final File idxFile = new File(packDirectory, indexName);
+			final Entry packFile = storageSystem.resolve(packDirectory, packName);
+			final Entry idxFile = storageSystem.resolve(packDirectory, indexName);
 			list.add(new PackFile(idxFile, packFile));
 			foundNew = true;
 		}
@@ -403,7 +405,12 @@ public class ObjectDirectory extends ObjectDatabase {
 	}
 
 	private Set<String> listPackDirectory() {
-		final String[] nameList = packDirectory.list();
+    Entry[] children = packDirectory.getChildren();
+		final String[] nameList = new String[children.length];
+    int i = 0;
+    for(Entry entry : children) {
+      nameList[i++] = entry.getName();
+    }
 		if (nameList == null)
 			return Collections.emptySet();
 		final Set<String> nameSet = new HashSet<String>(nameList.length << 1);
@@ -433,15 +440,15 @@ public class ObjectDirectory extends ObjectDatabase {
 		return l.toArray(new ObjectDatabase[l.size()]);
 	}
 
-	private static BufferedReader open(final File f)
-			throws FileNotFoundException {
-		return new BufferedReader(new FileReader(f));
+	private static BufferedReader open(final Entry f)
+			throws IOException {
+		return new BufferedReader(new InputStreamReader(f.getInputStream()));
 	}
 
 	private ObjectDatabase openAlternate(final String location)
 			throws IOException {
-		final File objdir = FS.resolve(objects, location);
-		final File parent = objdir.getParentFile();
+		final Entry objdir = storageSystem.resolve(objects, location);
+		final Entry parent = objdir.getParent();
 		if (FileKey.isGitRepository(parent)) {
 			final Repository db = RepositoryCache.open(FileKey.exact(parent));
 			return new AlternateRepositoryDatabase(db);

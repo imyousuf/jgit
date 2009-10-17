@@ -37,7 +37,8 @@
 
 package org.eclipse.jgit.errors;
 
-import java.io.File;
+import org.eclipse.jgit.io.Entry;
+
 
 /** Indicates a local repository does not exist. */
 public class RepositoryNotFoundException extends TransportException {
@@ -49,8 +50,8 @@ public class RepositoryNotFoundException extends TransportException {
 	 * @param location
 	 *            description of the repository not found, usually file path.
 	 */
-	public RepositoryNotFoundException(final File location) {
-		this(location.getPath());
+	public RepositoryNotFoundException(final Entry location) {
+		this(location.getAbsolutePath());
 	}
 
 	/**

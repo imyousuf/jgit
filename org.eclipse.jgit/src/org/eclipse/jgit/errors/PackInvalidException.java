@@ -37,8 +37,8 @@
 
 package org.eclipse.jgit.errors;
 
-import java.io.File;
 import java.io.IOException;
+import org.eclipse.jgit.io.Entry;
 
 /** Thrown when a PackFile previously failed and is known to be unusable */
 public class PackInvalidException extends IOException {
@@ -50,7 +50,7 @@ public class PackInvalidException extends IOException {
 	 * @param path
 	 *            path of the invalid pack file.
 	 */
-	public PackInvalidException(final File path) {
+	public PackInvalidException(final Entry path) {
 		super("Pack file invalid: " + path.getAbsolutePath());
 	}
 }

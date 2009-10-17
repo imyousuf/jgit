@@ -38,13 +38,12 @@
 
 package org.eclipse.jgit.lib;
 
+import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
-import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.RandomAccessFile;
-import java.nio.MappedByteBuffer;
-import java.nio.channels.FileChannel.MapMode;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
@@ -56,6 +55,7 @@ import java.util.zip.DataFormatException;
 import org.eclipse.jgit.errors.CorruptObjectException;
 import org.eclipse.jgit.errors.PackInvalidException;
 import org.eclipse.jgit.errors.PackMismatchException;
+import org.eclipse.jgit.io.Entry;
 import org.eclipse.jgit.util.NB;
 import org.eclipse.jgit.util.RawParseUtils;
 
@@ -72,13 +72,15 @@ public class PackFile implements Iterable<PackIndex.MutableEntry> {
 		}
 	};
 
-	private final File idxFile;
+	private final Entry idxFile;
 
-	private final File packFile;
+	private final Entry packFile;
+
+  private ByteBuffer buffer;
 
 	final int hash;
 
-	private RandomAccessFile fd;
+  private InputStream packStream;
 
 	long length;
 
@@ -104,10 +106,10 @@ public class PackFile implements Iterable<PackIndex.MutableEntry> {
 	 * @param packFile
 	 *            path of the <code>.pack</code> file holding the data.
 	 */
-	public PackFile(final File idxFile, final File packFile) {
+	public PackFile(final Entry idxFile, final Entry packFile) {
 		this.idxFile = idxFile;
 		this.packFile = packFile;
-		this.packLastModified = (int) (packFile.lastModified() >> 10);
+		this.packLastModified = (int) (packFile.getLastModifiedDate() >> 10);
 
 		// Multiply by 31 here so we can more directly combine with another
 		// value in WindowCache.hash(), without doing the multiply there.
@@ -144,7 +146,7 @@ public class PackFile implements Iterable<PackIndex.MutableEntry> {
 	}
 
 	/** @return the File object which locates this pack on disk. */
-	public File getPackFile() {
+	public Entry getPackFile() {
 		return packFile;
 	}
 
@@ -354,8 +356,13 @@ public class PackFile implements Iterable<PackIndex.MutableEntry> {
 		try {
 			if (invalid)
 				throw new PackInvalidException(packFile);
-			fd = new RandomAccessFile(packFile, "r");
-			length = fd.length();
+      if(!packFile.isRandomAccessSupported()) {
+        packStream = packFile.getInputStream();
+      }
+      else {
+        packStream = null;
+      }
+			length = packFile.length();
 			onOpenPack();
 		} catch (IOException ioe) {
 			openFail();
@@ -377,15 +384,15 @@ public class PackFile implements Iterable<PackIndex.MutableEntry> {
 	}
 
 	private void doClose() {
-		if (fd != null) {
+		if (packStream != null) {
 			try {
-				fd.close();
+				packStream.close();
 			} catch (IOException err) {
 				// Ignore a close event. We had it open only for reading.
 				// There should not be errors related to network buffers
 				// not flushed, etc.
 			}
-			fd = null;
+			packStream = null;
 		}
 	}
 
@@ -393,7 +400,13 @@ public class PackFile implements Iterable<PackIndex.MutableEntry> {
 		if (length < pos + size)
 			size = (int) (length - pos);
 		final byte[] buf = new byte[size];
-		NB.readFully(fd.getChannel(), pos, buf, 0, size);
+    if(!packFile.isRandomAccessSupported()) {
+      buffer.position((int) pos);
+      buffer.get(buf, 0, size);
+    }
+    else {
+      packFile.readRandomly(pos, size, buf, 0);
+    }
 		return new ByteArrayWindow(this, pos, buf);
 	}
 
@@ -401,29 +414,35 @@ public class PackFile implements Iterable<PackIndex.MutableEntry> {
 		if (length < pos + size)
 			size = (int) (length - pos);
 
-		MappedByteBuffer map;
-		try {
-			map = fd.getChannel().map(MapMode.READ_ONLY, pos, size);
-		} catch (IOException ioe1) {
-			// The most likely reason this failed is the JVM has run out
-			// of virtual memory. We need to discard quickly, and try to
-			// force the GC to finalize and release any existing mappings.
-			//
-			System.gc();
-			System.runFinalization();
-			map = fd.getChannel().map(MapMode.READ_ONLY, pos, size);
-		}
-
-		if (map.hasArray())
-			return new ByteArrayWindow(this, pos, map.array());
-		return new ByteBufferWindow(this, pos, map);
+    if (!packFile.isRandomAccessSupported()) {
+      if (buffer.hasArray()) {
+        buffer.position((int) pos);
+        byte[] buf = new byte[size];
+        buffer.get(buf, 0, size);
+        return new ByteArrayWindow(this, pos, buf);
+      }
+    }
+    else {
+      return new ByteArrayWindow(this, pos, packFile.readRandomly(pos, size,
+              null, 0));
+    }
+		return new ByteBufferWindow(this, pos, buffer);
 	}
 
 	private void onOpenPack() throws IOException {
 		final PackIndex idx = idx();
 		final byte[] buf = new byte[20];
-
-		NB.readFully(fd.getChannel(), 0, buf, 0, 12);
+    if(!packFile.isRandomAccessSupported()) {
+      ByteArrayOutputStream stream = new ByteArrayOutputStream();
+      NB.read(packStream, stream);
+      final byte[] toByteArray = stream.toByteArray();
+      length = toByteArray.length;
+      buffer = ByteBuffer.wrap(toByteArray);
+      buffer.get(buf, 0, 12);
+    }
+    else {
+      packFile.readRandomly(0, 12, buf, 0);
+    }
 		if (RawParseUtils.match(buf, 0, Constants.PACK_SIGNATURE) != 4)
 			throw new IOException("Not a PACK file.");
 		final long vers = NB.decodeUInt32(buf, 4);
@@ -436,8 +455,13 @@ public class PackFile implements Iterable<PackIndex.MutableEntry> {
 					+ " pack " + packCnt
 					+ " index " + idx.getObjectCount()
 					+ ": " + getPackFile());
-
-		NB.readFully(fd.getChannel(), length - 20, buf, 0, 20);
+    if(!packFile.isRandomAccessSupported()) {
+      buffer.position((int) (length - 20));
+      buffer.get(buf, 0, 20);
+    }
+    else {
+      packFile.readRandomly(length - 20, 20, buf, 0);
+    }
 		if (!Arrays.equals(buf, packChecksum))
 			throw new PackMismatchException("Pack checksum mismatch:"
 					+ " pack " + ObjectId.fromRaw(buf).name()

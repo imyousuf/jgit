@@ -40,10 +40,9 @@
 package org.eclipse.jgit.lib;
 
 import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -59,7 +58,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.eclipse.jgit.errors.ConfigInvalidException;
 import org.eclipse.jgit.errors.IncorrectObjectTypeException;
 import org.eclipse.jgit.errors.RevisionSyntaxException;
-import org.eclipse.jgit.util.FS;
+import org.eclipse.jgit.io.Entry;
+import org.eclipse.jgit.io.StorageSystemManager;
+import org.eclipse.jgit.io.StorageSystem;
 import org.eclipse.jgit.util.SystemReader;
 
 /**
@@ -90,7 +91,9 @@ import org.eclipse.jgit.util.SystemReader;
 public class Repository {
 	private final AtomicInteger useCnt = new AtomicInteger(1);
 
-	private final File gitDir;
+  private final StorageSystem storageSystem;
+
+	private final Entry gitDir;
 
 	private final RepositoryConfig config;
 
@@ -106,16 +109,17 @@ public class Repository {
 	/**
 	 * Construct a representation of a Git repository.
 	 * 
-	 * @param d
+	 * @param metaDirectoryUri
 	 *            GIT_DIR (the location of the repository metadata).
 	 * @throws IOException
 	 *             the repository appears to already exist but cannot be
 	 *             accessed.
 	 */
-	public Repository(final File d) throws IOException {
-		gitDir = d.getAbsoluteFile();
+	public Repository(final URI metaDirectoryUri) throws IOException {
+		gitDir = StorageSystemManager.getEntry(metaDirectoryUri);
+    storageSystem = gitDir.getStorageSystem();
 		refs = new RefDatabase(this);
-		objectDatabase = new ObjectDirectory(FS.resolve(gitDir, "objects"));
+		objectDatabase = new ObjectDirectory(storageSystem.resolve(gitDir, "objects"));
 
 		final FileBasedConfig userConfig;
 		userConfig = SystemReader.getInstance().openUserConfig();
@@ -128,7 +132,7 @@ public class Repository {
 			e2.initCause(e1);
 			throw e2;
 		}
-		config = new RepositoryConfig(userConfig, FS.resolve(gitDir, "config"));
+		config = new RepositoryConfig(userConfig, storageSystem.resolve(gitDir, "config"));
 
 		if (objectDatabase.exists()) {
 			try {
@@ -170,7 +174,7 @@ public class Repository {
 	 */
 	public void create(boolean bare) throws IOException {
 		final RepositoryConfig cfg = getConfig();
-		if (cfg.getFile().exists()) {
+		if (cfg.getFile().isExists()) {
 			throw new IllegalStateException("Repository already exists: "
 					+ gitDir);
 		}
@@ -178,8 +182,8 @@ public class Repository {
 		refs.create();
 		objectDatabase.create();
 
-		new File(gitDir, "branches").mkdir();
-		new File(gitDir, "remotes").mkdir();
+		storageSystem.resolve(gitDir, "branches").mkdirs();
+		storageSystem.resolve(gitDir, "remotes").mkdirs();
 		final String master = Constants.R_HEADS + Constants.MASTER;
 		refs.link(Constants.HEAD, master);
 
@@ -194,14 +198,14 @@ public class Repository {
 	/**
 	 * @return GIT_DIR
 	 */
-	public File getDirectory() {
+	public Entry getDirectory() {
 		return gitDir;
 	}
 
 	/**
 	 * @return the directory containing the objects owned by this repository.
 	 */
-	public File getObjectsDirectory() {
+	public Entry getObjectsDirectory() {
 		return objectDatabase.getDirectory();
 	}
 
@@ -229,7 +233,7 @@ public class Repository {
 	 * @param objectId
 	 * @return suggested file name
 	 */
-	public File toFile(final AnyObjectId objectId) {
+	public Entry toFile(final AnyObjectId objectId) {
 		return objectDatabase.fileFor(objectId);
 	}
 
@@ -774,7 +778,7 @@ public class Repository {
 	 *             index file could not be opened, read, or is not recognized as
 	 *             a Git pack file index.
 	 */
-	public void openPack(final File pack, final File idx) throws IOException {
+	public void openPack(final Entry pack, final Entry idx) throws IOException {
 		objectDatabase.openPack(pack, idx);
 	}
 
@@ -799,8 +803,9 @@ public class Repository {
 	 * @throws IOException
 	 */
 	public String getFullBranch() throws IOException {
-		final File ptr = new File(getDirectory(),Constants.HEAD);
-		final BufferedReader br = new BufferedReader(new FileReader(ptr));
+		final Entry ptr = storageSystem.resolve(getDirectory(), Constants.HEAD);
+          final BufferedReader br = new BufferedReader(new InputStreamReader(
+                  ptr.getInputStream()));
 		String ref;
 		try {
 			ref = br.readLine();
@@ -817,31 +822,39 @@ public class Repository {
 	 * @throws IOException
 	 */
 	public String getBranch() throws IOException {
-		try {
-			final File ptr = new File(getDirectory(), Constants.HEAD);
-			final BufferedReader br = new BufferedReader(new FileReader(ptr));
-			String ref;
-			try {
-				ref = br.readLine();
-			} finally {
-				br.close();
-			}
-			if (ref.startsWith("ref: "))
-				ref = ref.substring(5);
-			if (ref.startsWith("refs/heads/"))
-				ref = ref.substring(11);
-			return ref;
-		} catch (FileNotFoundException e) {
-			final File ptr = new File(getDirectory(),"head-name");
-			final BufferedReader br = new BufferedReader(new FileReader(ptr));
-			String ref;
-			try {
-				ref = br.readLine();
-			} finally {
-				br.close();
-			}
-			return ref;
-		}
+    try {
+      final Entry ptr =
+                  storageSystem.resolve(getDirectory(), Constants.HEAD);
+      final BufferedReader br = new BufferedReader(new InputStreamReader(
+              ptr.getInputStream()));
+      String ref;
+      try {
+        ref = br.readLine();
+      }
+      finally {
+        br.close();
+      }
+      if (ref.startsWith("ref: ")) {
+        ref = ref.substring(5);
+      }
+      if (ref.startsWith("refs/heads/")) {
+        ref = ref.substring(11);
+      }
+      return ref;
+    }
+    catch (IOException e) {
+      final Entry ptr = storageSystem.resolve(getDirectory(), "head-name");
+      final BufferedReader br = new BufferedReader(new InputStreamReader(
+              ptr.getInputStream()));
+      String ref;
+      try {
+        ref = br.readLine();
+      }
+      finally {
+        br.close();
+      }
+      return ref;
+    }
 	}
 
 	/**
@@ -936,42 +949,33 @@ public class Repository {
 		return index;
 	}
 
-	static byte[] gitInternalSlash(byte[] bytes) {
-		if (File.separatorChar == '/')
-			return bytes;
-		for (int i=0; i<bytes.length; ++i)
-			if (bytes[i] == File.separatorChar)
-				bytes[i] = '/';
-		return bytes;
-	}
-
 	/**
 	 * @return an important state
 	 */
 	public RepositoryState getRepositoryState() {
 		// Pre Git-1.6 logic
-		if (new File(getWorkDir(), ".dotest").exists())
+		if (storageSystem.resolve(getWorkDir(), ".dotest").isExists())
 			return RepositoryState.REBASING;
-		if (new File(gitDir,".dotest-merge").exists())
+		if (storageSystem.resolve(gitDir,".dotest-merge").isExists())
 			return RepositoryState.REBASING_INTERACTIVE;
 
 		// From 1.6 onwards
-		if (new File(getDirectory(),"rebase-apply/rebasing").exists())
+		if (storageSystem.resolve(getDirectory(),"rebase-apply/rebasing").isExists())
 			return RepositoryState.REBASING_REBASING;
-		if (new File(getDirectory(),"rebase-apply/applying").exists())
+		if (storageSystem.resolve(getDirectory(),"rebase-apply/applying").isExists())
 			return RepositoryState.APPLY;
-		if (new File(getDirectory(),"rebase-apply").exists())
+		if (storageSystem.resolve(getDirectory(),"rebase-apply").isExists())
 			return RepositoryState.REBASING;
 
-		if (new File(getDirectory(),"rebase-merge/interactive").exists())
+		if (storageSystem.resolve(getDirectory(),"rebase-merge/interactive").isExists())
 			return RepositoryState.REBASING_INTERACTIVE;
-		if (new File(getDirectory(),"rebase-merge").exists())
+		if (storageSystem.resolve(getDirectory(),"rebase-merge").isExists())
 			return RepositoryState.REBASING_MERGE;
 
 		// Both versions
-		if (new File(gitDir,"MERGE_HEAD").exists())
+		if (storageSystem.resolve(gitDir,"MERGE_HEAD").isExists())
 			return RepositoryState.MERGING;
-		if (new File(gitDir,"BISECT_LOG").exists())
+		if (storageSystem.resolve(gitDir,"BISECT_LOG").isExists())
 			return RepositoryState.BISECTING;
 
 		return RepositoryState.SAFE;
@@ -1037,31 +1041,25 @@ public class Repository {
 	 * @return normalized repository relative path or the empty
 	 *         string if the file is not relative to the work directory.
 	 */
-	public static String stripWorkDir(File workDir, File file) {
-		final String filePath = file.getPath();
-		final String workDirPath = workDir.getPath();
+	public static String stripWorkDir(Entry workDir, Entry entry) {
+		final String filePath = entry.getAbsolutePath();
+		final String workDirPath = workDir.getAbsolutePath();
 
 		if (filePath.length() <= workDirPath.length() ||
-		    filePath.charAt(workDirPath.length()) != File.separatorChar ||
+		    filePath.charAt(workDirPath.length()) != '/' ||
 		    !filePath.startsWith(workDirPath)) {
-			File absWd = workDir.isAbsolute() ? workDir : workDir.getAbsoluteFile();
-			File absFile = file.isAbsolute() ? file : file.getAbsoluteFile();
-			if (absWd == workDir && absFile == file)
-				return "";
-			return stripWorkDir(absWd, absFile);
+			return "";
 		}
 
 		String relName = filePath.substring(workDirPath.length() + 1);
-		if (File.separatorChar != '/')
-			relName = relName.replace(File.separatorChar, '/');
 		return relName;
 	}
 
 	/**
 	 * @return the workdir file, i.e. where the files are checked out
 	 */
-	public File getWorkDir() {
-		return getDirectory().getParentFile();
+	public Entry getWorkDir() {
+		return getDirectory().getParent();
 	}
 
 	/**

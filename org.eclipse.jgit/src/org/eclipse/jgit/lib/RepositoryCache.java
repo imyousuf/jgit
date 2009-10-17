@@ -37,7 +37,6 @@
 
 package org.eclipse.jgit.lib;
 
-import java.io.File;
 import java.io.IOException;
 import java.lang.ref.Reference;
 import java.lang.ref.SoftReference;
@@ -46,7 +45,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.eclipse.jgit.errors.RepositoryNotFoundException;
-import org.eclipse.jgit.util.FS;
+import org.eclipse.jgit.io.Entry;
+import org.eclipse.jgit.io.StorageSystem;
 import org.eclipse.jgit.util.NB;
 import org.eclipse.jgit.util.RawParseUtils;
 
@@ -245,7 +245,7 @@ public class RepositoryCache {
 		 * @return a key for the given directory.
 		 * @see #lenient(File)
 		 */
-		public static FileKey exact(final File directory) {
+		public static FileKey exact(final Entry directory) {
 			return new FileKey(directory);
 		}
 
@@ -265,38 +265,34 @@ public class RepositoryCache {
 		 * @return a key for the given directory.
 		 * @see #exact(File)
 		 */
-		public static FileKey lenient(final File directory) {
-			final File gitdir = resolve(directory);
+		public static FileKey lenient(final Entry directory) {
+			final Entry gitdir = resolve(directory);
 			return new FileKey(gitdir != null ? gitdir : directory);
 		}
 
-		private final File path;
+		private final Entry path;
 
 		/**
 		 * @param directory
 		 *            exact location of the repository.
 		 */
-		protected FileKey(final File directory) {
+		protected FileKey(final Entry directory) {
 			path = canonical(directory);
 		}
 
-		private static File canonical(final File path) {
-			try {
-				return path.getCanonicalFile();
-			} catch (IOException e) {
-				return path.getAbsoluteFile();
-			}
+		private static Entry canonical(final Entry path) {
+			return path;
 		}
 
 		/** @return location supplied to the constructor. */
-		public final File getFile() {
+		public final Entry getFile() {
 			return path;
 		}
 
 		public Repository open(final boolean mustExist) throws IOException {
 			if (mustExist && !isGitRepository(path))
 				throw new RepositoryNotFoundException(path);
-			return new Repository(path);
+			return new Repository(path.getURI());
 		}
 
 		@Override
@@ -326,19 +322,20 @@ public class RepositoryCache {
 		 *         it doesn't look enough like a Git directory to really be a
 		 *         Git directory.
 		 */
-		public static boolean isGitRepository(final File dir) {
-			return FS.resolve(dir, "objects").exists()
-					&& FS.resolve(dir, "refs").exists()
-					&& isValidHead(new File(dir, Constants.HEAD));
+		public static boolean isGitRepository(final Entry dir) {
+      StorageSystem system = dir.getStorageSystem();
+			return system.resolve(dir, "objects").isExists()
+					&& system.resolve(dir, "refs").isExists()
+					&& isValidHead(system.resolve(dir, Constants.HEAD));
 		}
 
-		private static boolean isValidHead(final File head) {
+		private static boolean isValidHead(final Entry head) {
 			final String ref = readFirstLine(head);
 			return ref != null
 					&& (ref.startsWith("ref: refs/") || ObjectId.isId(ref));
 		}
 
-		private static String readFirstLine(final File head) {
+		private static String readFirstLine(final Entry head) {
 			try {
 				final byte[] buf = NB.readFully(head, 4096);
 				int n = buf.length;
@@ -368,16 +365,18 @@ public class RepositoryCache {
 		 * @return the actual directory location if a better match is found;
 		 *         null if there is no suitable match.
 		 */
-		public static File resolve(final File directory) {
+		public static Entry resolve(final Entry directory) {
+      StorageSystem system = directory.getStorageSystem();
 			if (isGitRepository(directory))
 				return directory;
-			if (isGitRepository(new File(directory, ".git")))
-				return new File(directory, ".git");
+      final Entry resolvedEntry = system.resolve(directory, ".git");
+			if (isGitRepository(resolvedEntry))
+				return resolvedEntry;
 
 			final String name = directory.getName();
-			final File parent = directory.getParentFile();
-			if (isGitRepository(new File(parent, name + ".git")))
-				return new File(parent, name + ".git");
+			final Entry parent = directory.getParent();
+			if (isGitRepository(system.resolve(parent, name + ".git")))
+				return system.resolve(parent, name + ".git");
 			return null;
 		}
 	}
