@@ -37,14 +37,17 @@
 
 package org.eclipse.jgit.util;
 
+import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import org.eclipse.jgit.io.Entry;
 
 /** Conversion utilities for network byte order handling. */
 public final class NB {
@@ -97,6 +100,38 @@ public final class NB {
 		}
 	}
 
+  public static final byte[] readFully(final Entry path)
+			throws IOException {
+    return readFully(path, Integer.MAX_VALUE);
+  }
+
+	public static final byte[] readFully(final Entry path, final int max)
+			throws IOException {
+		final InputStream in = path.getInputStream();
+		try {
+			final long sz = path.length();
+      byte[] buf;
+      if(sz > -1) {
+        if (sz > max)
+          throw new IOException("File is too large: " + path);
+        buf = new byte[(int) sz];
+        readFully(in, buf, 0, buf.length);
+      }
+      else {
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+        read(in, outputStream);
+        buf = outputStream.toByteArray();
+      }
+			return buf;
+		} finally {
+			try {
+				in.close();
+			} catch (IOException ignored) {
+				// ignore any close errors, this was a read only stream
+			}
+		}
+	}
+
 	/**
 	 * Read the entire byte array into memory, or throw an exception.
 	 * 
@@ -113,8 +148,9 @@ public final class NB {
 	 * @throws IOException
 	 *             there was an error reading from the stream.
 	 */
-	public static void readFully(final InputStream fd, final byte[] dst,
+	public static int readFully(final InputStream fd, final byte[] dst,
 			int off, int len) throws IOException {
+    int initOff = off;
 		while (len > 0) {
 			final int r = fd.read(dst, off, len);
 			if (r <= 0)
@@ -122,6 +158,22 @@ public final class NB {
 			off += r;
 			len -= r;
 		}
+    return off - initOff;
+	}
+
+	public static int read(final InputStream fd, final OutputStream dst)
+          throws IOException {
+    int size = 0;
+    int r = 1;
+    byte[] bytes = new byte[1000];
+		while (r > 0) {
+			r = fd.read(bytes, 0, 1000);
+      if(r > 0) {
+        dst.write(bytes, 0, r);
+        size += r;
+      }
+		}
+    return size;
 	}
 
 	/**

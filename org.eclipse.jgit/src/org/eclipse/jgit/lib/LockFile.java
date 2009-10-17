@@ -35,18 +35,15 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-
 package org.eclipse.jgit.lib;
 
 import java.io.BufferedOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
+import org.eclipse.jgit.io.Entry;
 
 /**
  * Git style file locking and replacement.
@@ -59,347 +56,364 @@ import java.nio.channels.OverlappingFileLockException;
  * name.
  */
 public class LockFile {
-	private final File ref;
 
-	private final File lck;
+  public static final int DEFAULT_BUFFER_SIZE = 500;
+  private final Entry ref;
+  private boolean haveLck;
+  private OutputStream os;
+  private boolean needStatInformation;
+  private long commitLastModified;
 
-	private FileLock fLck;
+  /**
+   * Create a new lock for any file.
+   *
+   * @param f
+   *            the file that will be locked.
+   */
+  public LockFile(final Entry f) {
+    ref = f;
+  }
 
-	private boolean haveLck;
+  /**
+   * Try to establish the lock.
+   *
+   * @return true if the lock is now held by the caller; false if it is held
+   *         by someone else.
+   * @throws IOException
+   *             the temporary output file could not be created. The caller
+   *             does not hold the lock.
+   */
+  public boolean lock()
+          throws IOException {
+    boolean locked = ref.tryLock();
+    if (locked) {
+      haveLck = true;
+      try {
+        os = ref.getOutputStream(false, true);
+      }
+      catch (OverlappingFileLockException ofle) {
+        // We cannot use unlock() here as this file is not
+        // held by us, but we thought we created it. We must
+        // not delete it, as it belongs to some other process.
+        //
+        haveLck = false;
+        os = null;
+      }
+      catch (IOException ioe) {
+        throw ioe;
+      }
+    }
+    return haveLck;
+  }
 
-	private FileOutputStream os;
+  /**
+   * Try to establish the lock for appending.
+   *
+   * @return true if the lock is now held by the caller; false if it is held
+   *         by someone else.
+   * @throws IOException
+   *             the temporary output file could not be created. The caller
+   *             does not hold the lock.
+   */
+  public boolean lockForAppend()
+          throws IOException {
+    if (!lock()) {
+      return false;
+    }
+    copyCurrentContent();
+    return true;
+  }
 
-	private boolean needStatInformation;
+  /**
+   * Copy the current file content into the temporary file.
+   * <p>
+   * This method saves the current file content by inserting it into the
+   * temporary file, so that the caller can safely append rather than replace
+   * the primary file.
+   * <p>
+   * This method does nothing if the current file does not exist, or exists
+   * but is empty.
+   *
+   * @throws IOException
+   *             the temporary file could not be written, or a read error
+   *             occurred while reading from the current file. The lock is
+   *             released before throwing the underlying IO exception to the
+   *             caller.
+   * @throws RuntimeException
+   *             the temporary file could not be written. The lock is released
+   *             before throwing the underlying exception to the caller.
+   */
+  public void copyCurrentContent()
+          throws IOException {
+    requireLock();
+    try {
+      final InputStream fis = ref.getInputStream();
+      try {
+        final byte[] buf = new byte[2048];
+        int r;
+        while ((r = fis.read(buf)) >= 0) {
+          os.write(buf, 0, r);
+        }
+      }
+      finally {
+        fis.close();
+      }
+    }
+    catch (FileNotFoundException fnfe) {
+      // Don't worry about a file that doesn't exist yet, it
+      // conceptually has no current content to copy.
+      //
+    }
+    catch (IOException ioe) {
+      unlock();
+      throw ioe;
+    }
+    catch (RuntimeException ioe) {
+      unlock();
+      throw ioe;
+    }
+    catch (Error ioe) {
+      unlock();
+      throw ioe;
+    }
+  }
 
-	private long commitLastModified;
+  /**
+   * Write an ObjectId and LF to the temporary file.
+   *
+   * @param id
+   *            the id to store in the file. The id will be written in hex,
+   *            followed by a sole LF.
+   * @throws IOException
+   *             the temporary file could not be written. The lock is released
+   *             before throwing the underlying IO exception to the caller.
+   * @throws RuntimeException
+   *             the temporary file could not be written. The lock is released
+   *             before throwing the underlying exception to the caller.
+   */
+  public void write(final ObjectId id)
+          throws IOException {
+    requireLock();
+    try {
+      final BufferedOutputStream b;
+      b = new BufferedOutputStream(os, Constants.OBJECT_ID_LENGTH * 2 + 1);
+      id.copyTo(b);
+      b.write('\n');
+      b.flush();
+      b.close();
+      os = null;
+    }
+    catch (IOException ioe) {
+      unlock();
+      throw ioe;
+    }
+    catch (RuntimeException ioe) {
+      unlock();
+      throw ioe;
+    }
+    catch (Error ioe) {
+      unlock();
+      throw ioe;
+    }
+  }
 
-	/**
-	 * Create a new lock for any file.
-	 * 
-	 * @param f
-	 *            the file that will be locked.
-	 */
-	public LockFile(final File f) {
-		ref = f;
-		lck = new File(ref.getParentFile(), ref.getName() + ".lock");
-	}
+  /**
+   * Write arbitrary data to the temporary file.
+   *
+   * @param content
+   *            the bytes to store in the temporary file. No additional bytes
+   *            are added, so if the file must end with an LF it must appear
+   *            at the end of the byte array.
+   * @throws IOException
+   *             the temporary file could not be written. The lock is released
+   *             before throwing the underlying IO exception to the caller.
+   * @throws RuntimeException
+   *             the temporary file could not be written. The lock is released
+   *             before throwing the underlying exception to the caller.
+   */
+  public void write(final byte[] content)
+          throws IOException {
+    requireLock();
+    try {
+      os.write(content);
+      os.flush();
+      os.close();
+      os = null;
+    }
+    catch (IOException ioe) {
+      unlock();
+      throw ioe;
+    }
+    catch (RuntimeException ioe) {
+      unlock();
+      throw ioe;
+    }
+    catch (Error ioe) {
+      unlock();
+      throw ioe;
+    }
+  }
 
-	/**
-	 * Try to establish the lock.
-	 * 
-	 * @return true if the lock is now held by the caller; false if it is held
-	 *         by someone else.
-	 * @throws IOException
-	 *             the temporary output file could not be created. The caller
-	 *             does not hold the lock.
-	 */
-	public boolean lock() throws IOException {
-		lck.getParentFile().mkdirs();
-		if (lck.createNewFile()) {
-			haveLck = true;
-			try {
-				os = new FileOutputStream(lck);
-				try {
-					fLck = os.getChannel().tryLock();
-					if (fLck == null)
-						throw new OverlappingFileLockException();
-				} catch (OverlappingFileLockException ofle) {
-					// We cannot use unlock() here as this file is not
-					// held by us, but we thought we created it. We must
-					// not delete it, as it belongs to some other process.
-					//
-					haveLck = false;
-					try {
-						os.close();
-					} catch (IOException ioe) {
-						// Fail by returning haveLck = false.
-					}
-					os = null;
-				}
-			} catch (IOException ioe) {
-				unlock();
-				throw ioe;
-			}
-		}
-		return haveLck;
-	}
+  /**
+   * Obtain the direct output stream for this lock.
+   * <p>
+   * The stream may only be accessed once, and only after {@link #lock()} has
+   * been successfully invoked and returned true. Callers must close the
+   * stream prior to calling {@link #commit()} to commit the change.
+   *
+   * @return a stream to write to the new file. The stream is unbuffered.
+   */
+  public OutputStream getOutputStream() {
+    requireLock();
+    return new OutputStream() {
 
-	/**
-	 * Try to establish the lock for appending.
-	 * 
-	 * @return true if the lock is now held by the caller; false if it is held
-	 *         by someone else.
-	 * @throws IOException
-	 *             the temporary output file could not be created. The caller
-	 *             does not hold the lock.
-	 */
-	public boolean lockForAppend() throws IOException {
-		if (!lock())
-			return false;
-		copyCurrentContent();
-		return true;
-	}
+      @Override
+      public void write(final byte[] b,
+                        final int o,
+                        final int n)
+              throws IOException {
+        os.write(b, o, n);
+      }
 
-	/**
-	 * Copy the current file content into the temporary file.
-	 * <p>
-	 * This method saves the current file content by inserting it into the
-	 * temporary file, so that the caller can safely append rather than replace
-	 * the primary file.
-	 * <p>
-	 * This method does nothing if the current file does not exist, or exists
-	 * but is empty.
-	 * 
-	 * @throws IOException
-	 *             the temporary file could not be written, or a read error
-	 *             occurred while reading from the current file. The lock is
-	 *             released before throwing the underlying IO exception to the
-	 *             caller.
-	 * @throws RuntimeException
-	 *             the temporary file could not be written. The lock is released
-	 *             before throwing the underlying exception to the caller.
-	 */
-	public void copyCurrentContent() throws IOException {
-		requireLock();
-		try {
-			final FileInputStream fis = new FileInputStream(ref);
-			try {
-				final byte[] buf = new byte[2048];
-				int r;
-				while ((r = fis.read(buf)) >= 0)
-					os.write(buf, 0, r);
-			} finally {
-				fis.close();
-			}
-		} catch (FileNotFoundException fnfe) {
-			// Don't worry about a file that doesn't exist yet, it
-			// conceptually has no current content to copy.
-			//
-		} catch (IOException ioe) {
-			unlock();
-			throw ioe;
-		} catch (RuntimeException ioe) {
-			unlock();
-			throw ioe;
-		} catch (Error ioe) {
-			unlock();
-			throw ioe;
-		}
-	}
+      @Override
+      public void write(final byte[] b)
+              throws IOException {
+        os.write(b);
+      }
 
-	/**
-	 * Write an ObjectId and LF to the temporary file.
-	 * 
-	 * @param id
-	 *            the id to store in the file. The id will be written in hex,
-	 *            followed by a sole LF.
-	 * @throws IOException
-	 *             the temporary file could not be written. The lock is released
-	 *             before throwing the underlying IO exception to the caller.
-	 * @throws RuntimeException
-	 *             the temporary file could not be written. The lock is released
-	 *             before throwing the underlying exception to the caller.
-	 */
-	public void write(final ObjectId id) throws IOException {
-		requireLock();
-		try {
-			final BufferedOutputStream b;
-			b = new BufferedOutputStream(os, Constants.OBJECT_ID_LENGTH * 2 + 1);
-			id.copyTo(b);
-			b.write('\n');
-			b.flush();
-			fLck.release();
-			b.close();
-			os = null;
-		} catch (IOException ioe) {
-			unlock();
-			throw ioe;
-		} catch (RuntimeException ioe) {
-			unlock();
-			throw ioe;
-		} catch (Error ioe) {
-			unlock();
-			throw ioe;
-		}
-	}
+      @Override
+      public void write(final int b)
+              throws IOException {
+        os.write(b);
+      }
 
-	/**
-	 * Write arbitrary data to the temporary file.
-	 * 
-	 * @param content
-	 *            the bytes to store in the temporary file. No additional bytes
-	 *            are added, so if the file must end with an LF it must appear
-	 *            at the end of the byte array.
-	 * @throws IOException
-	 *             the temporary file could not be written. The lock is released
-	 *             before throwing the underlying IO exception to the caller.
-	 * @throws RuntimeException
-	 *             the temporary file could not be written. The lock is released
-	 *             before throwing the underlying exception to the caller.
-	 */
-	public void write(final byte[] content) throws IOException {
-		requireLock();
-		try {
-			os.write(content);
-			os.flush();
-			fLck.release();
-			os.close();
-			os = null;
-		} catch (IOException ioe) {
-			unlock();
-			throw ioe;
-		} catch (RuntimeException ioe) {
-			unlock();
-			throw ioe;
-		} catch (Error ioe) {
-			unlock();
-			throw ioe;
-		}
-	}
+      @Override
+      public void flush()
+              throws IOException {
+        os.flush();
+      }
 
-	/**
-	 * Obtain the direct output stream for this lock.
-	 * <p>
-	 * The stream may only be accessed once, and only after {@link #lock()} has
-	 * been successfully invoked and returned true. Callers must close the
-	 * stream prior to calling {@link #commit()} to commit the change.
-	 * 
-	 * @return a stream to write to the new file. The stream is unbuffered.
-	 */
-	public OutputStream getOutputStream() {
-		requireLock();
-		return new OutputStream() {
-			@Override
-			public void write(final byte[] b, final int o, final int n)
-					throws IOException {
-				os.write(b, o, n);
-			}
+      @Override
+      public void close()
+              throws IOException {
+        try {
+          os.flush();
+          os.close();
+          os = null;
+        }
+        catch (IOException ioe) {
+          unlock();
+          throw ioe;
+        }
+        catch (RuntimeException ioe) {
+          unlock();
+          throw ioe;
+        }
+        catch (Error ioe) {
+          unlock();
+          throw ioe;
+        }
+      }
+    };
+  }
 
-			@Override
-			public void write(final byte[] b) throws IOException {
-				os.write(b);
-			}
+  private void requireLock() {
+    if (os == null) {
+      unlock();
+      throw new IllegalStateException("Lock on " + ref + " not held.");
+    }
+  }
 
-			@Override
-			public void write(final int b) throws IOException {
-				os.write(b);
-			}
+  /**
+   * Request that {@link #commit()} remember modification time.
+   *
+   * @param on
+   *            true if the commit method must remember the modification time.
+   */
+  public void setNeedStatInformation(final boolean on) {
+    needStatInformation = on;
+  }
 
-			@Override
-			public void flush() throws IOException {
-				os.flush();
-			}
+  /**
+   * Commit this change and release the lock.
+   * <p>
+   * If this method fails (returns false) the lock is still released.
+   *
+   * @return true if the commit was successful and the file contains the new
+   *         data; false if the commit failed and the file remains with the
+   *         old data.
+   * @throws IllegalStateException
+   *             the lock is not held.
+   */
+  public boolean commit() {
+    if (os != null) {
+      unlock();
+      throw new IllegalStateException("Lock on " + ref + " not closed.");
+    }
 
-			@Override
-			public void close() throws IOException {
-				try {
-					os.flush();
-					fLck.release();
-					os.close();
-					os = null;
-				} catch (IOException ioe) {
-					unlock();
-					throw ioe;
-				} catch (RuntimeException ioe) {
-					unlock();
-					throw ioe;
-				} catch (Error ioe) {
-					unlock();
-					throw ioe;
-				}
-			}
-		};
-	}
+    saveStatInformation();
+    try {
+      unlock();
+      return true;
+    }
+    catch (Exception ex) {
+      //ignore
+    }
+    return false;
+  }
 
-	private void requireLock() {
-		if (os == null) {
-			unlock();
-			throw new IllegalStateException("Lock on " + ref + " not held.");
-		}
-	}
+  public static int copy(
+          InputStream input,
+          OutputStream output)
+          throws IOException {
+    byte[] buffer = new byte[DEFAULT_BUFFER_SIZE];
+    int count = 0;
+    int n = 0;
+    while (-1 != (n = input.read(buffer))) {
+      output.write(buffer, 0, n);
+      count += n;
+    }
+    return count;
+  }
 
-	/**
-	 * Request that {@link #commit()} remember modification time.
-	 * 
-	 * @param on
-	 *            true if the commit method must remember the modification time.
-	 */
-	public void setNeedStatInformation(final boolean on) {
-		needStatInformation = on;
-	}
+  private void saveStatInformation() {
+    if (needStatInformation) {
+      commitLastModified = System.currentTimeMillis();
+    }
+  }
 
-	/**
-	 * Commit this change and release the lock.
-	 * <p>
-	 * If this method fails (returns false) the lock is still released.
-	 * 
-	 * @return true if the commit was successful and the file contains the new
-	 *         data; false if the commit failed and the file remains with the
-	 *         old data.
-	 * @throws IllegalStateException
-	 *             the lock is not held.
-	 */
-	public boolean commit() {
-		if (os != null) {
-			unlock();
-			throw new IllegalStateException("Lock on " + ref + " not closed.");
-		}
+  /**
+   * Get the modification time of the output file when it was committed.
+   *
+   * @return modification time of the lock file right before we committed it.
+   */
+  public long getCommitLastModified() {
+    return commitLastModified;
+  }
 
-		saveStatInformation();
-		if (lck.renameTo(ref))
-			return true;
-		if (!ref.exists() || ref.delete())
-			if (lck.renameTo(ref))
-				return true;
-		unlock();
-		return false;
-	}
+  /**
+   * Unlock this file and abort this change.
+   * <p>
+   * The temporary file (if created) is deleted before returning.
+   */
+  public void unlock() {
+    if (os != null) {
+      try {
+        os.close();
+      }
+      catch (IOException ioe) {
+        // Ignore this
+      }
+      os = null;
+    }
+    if (haveLck) {
+      haveLck = false;
+      ref.unlock();
+    }
+  }
 
-	private void saveStatInformation() {
-		if (needStatInformation)
-			commitLastModified = lck.lastModified();
-	}
-
-	/**
-	 * Get the modification time of the output file when it was committed.
-	 * 
-	 * @return modification time of the lock file right before we committed it.
-	 */
-	public long getCommitLastModified() {
-		return commitLastModified;
-	}
-
-	/**
-	 * Unlock this file and abort this change.
-	 * <p>
-	 * The temporary file (if created) is deleted before returning.
-	 */
-	public void unlock() {
-		if (os != null) {
-			if (fLck != null) {
-				try {
-					fLck.release();
-				} catch (IOException ioe) {
-					// Huh?
-				}
-				fLck = null;
-			}
-			try {
-				os.close();
-			} catch (IOException ioe) {
-				// Ignore this
-			}
-			os = null;
-		}
-
-		if (haveLck) {
-			haveLck = false;
-			lck.delete();
-		}
-	}
-
-	@Override
-	public String toString() {
-		return "LockFile[" + lck + ", haveLck=" + haveLck + "]";
-	}
+  @Override
+  public String toString() {
+    return "LockFile[" + ref + ", haveLck=" + haveLck + "]";
+  }
 }

@@ -41,7 +41,7 @@
 
 package org.eclipse.jgit.lib;
 
-import java.io.File;
+import org.eclipse.jgit.io.Entry;
 
 /**
  * An object representing the Git config file.
@@ -63,7 +63,7 @@ public class RepositoryConfig extends FileBasedConfig {
 	 * @param cfgLocation
 	 *            path of the file to load (or save).
 	 */
-	public RepositoryConfig(final Config base, final File cfgLocation) {
+	public RepositoryConfig(final Config base, final Entry cfgLocation) {
 		super(base, cfgLocation);
 	}
 

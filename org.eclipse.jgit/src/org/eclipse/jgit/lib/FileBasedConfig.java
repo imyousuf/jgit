@@ -40,11 +40,11 @@
  */
 package org.eclipse.jgit.lib;
 
-import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 
 import org.eclipse.jgit.errors.ConfigInvalidException;
+import org.eclipse.jgit.io.Entry;
 import org.eclipse.jgit.util.NB;
 import org.eclipse.jgit.util.RawParseUtils;
 
@@ -52,7 +52,7 @@ import org.eclipse.jgit.util.RawParseUtils;
  * The configuration file that is stored in the file of the file system.
  */
 public class FileBasedConfig extends Config {
-	private final File configFile;
+	private final Entry configFile;
 
 	/**
 	 * Create a configuration with no default fallback.
@@ -60,7 +60,7 @@ public class FileBasedConfig extends Config {
 	 * @param cfgLocation
 	 *            the location of the configuration file on the file system
 	 */
-	public FileBasedConfig(File cfgLocation) {
+	public FileBasedConfig(Entry cfgLocation) {
 		this(null, cfgLocation);
 	}
 
@@ -72,13 +72,13 @@ public class FileBasedConfig extends Config {
 	 * @param cfgLocation
 	 *            the location of the configuration file on the file system
 	 */
-	public FileBasedConfig(Config base, File cfgLocation) {
+	public FileBasedConfig(Config base, Entry cfgLocation) {
 		super(base);
 		configFile = cfgLocation;
 	}
 
 	/** @return location of the configuration file on disk */
-	public final File getFile() {
+	public final Entry getFile() {
 		return configFile;
 	}
 
@@ -135,6 +135,6 @@ public class FileBasedConfig extends Config {
 
 	@Override
 	public String toString() {
-		return getClass().getSimpleName() + "[" + getFile().getPath() + "]";
+		return getClass().getSimpleName() + "[" + getFile().getName() + "]";
 	}
 }
